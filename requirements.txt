@@ -1,0 +1,6 @@
+streamlit
+crawl4ai
+groq
+beautifulsoup4
+requests
+nest_asyncio
