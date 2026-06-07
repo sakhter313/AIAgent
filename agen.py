@@ -539,6 +539,76 @@ def log_trace(memory: dict, agent: str, thought: str, action: str, observation: 
 # LOCATOR TABLE BUILDER
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _best_locator(tag: str, attrs: dict, text: str) -> tuple:
+    """
+    Return (locator_string, loc_type) using a mixed strategy:
+      - ID available           → By.id()
+      - name available (input) → By.name()
+      - type attr on input     → By.cssSelector("input[type='x']")
+      - visible text, button/a → By.xpath(//tag[normalize-space()='text'])
+      - aria-label             → By.xpath(//*[@aria-label='...'])
+      - placeholder            → By.cssSelector("[placeholder='...']")
+      - href (short & clean)   → By.linkText() for <a> with plain text
+      - single class           → By.className()
+      - href attribute         → By.cssSelector("a[href='...']")
+      - fallback               → By.xpath with tag + class predicate
+    """
+    el_id    = attrs.get("id", "").strip()
+    el_name  = attrs.get("name", "").strip()
+    el_type  = attrs.get("type", "").strip()
+    el_class = attrs.get("class", "").strip()
+    el_href  = attrs.get("href", "").strip()
+    el_ph    = attrs.get("placeholder", "").strip()
+    el_aria  = attrs.get("aria-label", "").strip()
+    txt      = text.strip()
+
+    # 1. ID — always best
+    if el_id:
+        return f'By.id("{el_id}")', "ID"
+
+    # 2. name — great for form fields
+    if el_name and tag in ("input", "select", "textarea"):
+        return f'By.name("{el_name}")', "NAME"
+
+    # 3. Visible text XPath — buttons & links with short clean text
+    if txt and len(txt) <= 40 and tag in ("button", "a", "label") and not any(c in txt for c in ['"', "'"]):
+        return f'By.xpath("//{tag}[normalize-space()=\'{txt}\']")', "XPATH"
+
+    # 4. aria-label XPath
+    if el_aria:
+        return f'By.xpath("//*[@aria-label=\'{el_aria}\']")', "XPATH"
+
+    # 5. input[type] CSS — distinguishable form controls
+    if el_type and tag == "input" and el_type not in ("text", "hidden"):
+        return f'By.cssSelector("input[type=\'{el_type}\']")', "CSS"
+
+    # 6. placeholder CSS
+    if el_ph:
+        safe_ph = el_ph.replace("'", "\\'")
+        return f"By.cssSelector(\"[placeholder='{safe_ph}']\")", "CSS"
+
+    # 7. linkText — <a> with short visible text (no special chars)
+    if tag == "a" and txt and len(txt) <= 30 and txt.isascii():
+        return f'By.linkText("{txt}")', "LINK"
+
+    # 8. Single CSS class
+    if el_class:
+        classes = el_class.split()
+        if len(classes) == 1:
+            return f'By.className("{classes[0]}")', "CLASS"
+        # multi-class → CSS with first meaningful class
+        first = classes[0]
+        return f'By.cssSelector("{tag}.{first}")', "CSS"
+
+    # 9. href attribute CSS (for <a> without text)
+    if el_href and el_href not in ("#", "/", "javascript:void(0)"):
+        safe = el_href[:50].replace("'", "\\'")
+        return f"By.cssSelector(\"a[href='{safe}']\")", "CSS"
+
+    # 10. XPath fallback with tag
+    return f'By.xpath("//{tag}")', "XPATH"
+
+
 def parse_locator_rows(agent1_text: str, page_elements: list) -> list:
     rows = []
     seen = set()
@@ -555,12 +625,14 @@ def parse_locator_rows(agent1_text: str, page_elements: list) -> list:
         if loc in seen:
             continue
         seen.add(loc)
+        # Detect type from By.xxx prefix
         loc_type = "XPATH"
-        if "By.id(" in loc:              loc_type = "ID"
-        elif "By.name(" in loc:          loc_type = "NAME"
-        elif "By.cssSelector(" in loc:   loc_type = "CSS"
-        elif "By.className(" in loc:     loc_type = "CLASS"
-        elif "By.linkText(" in loc:      loc_type = "LINK"
+        if "By.id("          in loc: loc_type = "ID"
+        elif "By.name("      in loc: loc_type = "NAME"
+        elif "By.cssSelector(" in loc: loc_type = "CSS"
+        elif "By.className(" in loc: loc_type = "CLASS"
+        elif "By.linkText("  in loc: loc_type = "LINK"
+        elif "By.partialLinkText(" in loc: loc_type = "LINK"
         rows.append({
             "tag":      m.group("tag").strip().replace("<", "").replace(">", ""),
             "purpose":  m.group("purpose").strip(),
@@ -569,48 +641,53 @@ def parse_locator_rows(agent1_text: str, page_elements: list) -> list:
             "priority": m.group("priority").strip().upper(),
         })
 
+    # ── Fallback: build mixed-strategy rows from raw scraped elements ──────
     if len(rows) < 3 and page_elements:
         for el in page_elements:
             attrs = el.get("attrs", {})
             tag   = el.get("tag", "?")
             text  = el.get("text", "")
-            if attrs.get("id"):
-                loc, loc_type = f'By.id("{attrs["id"]}")', "ID"
-            elif attrs.get("name"):
-                loc, loc_type = f'By.name("{attrs["name"]}")', "NAME"
-            elif attrs.get("class"):
-                cls = attrs["class"].split()[0]
-                loc, loc_type = f'By.cssSelector("{tag}.{cls}")', "CSS"
-            elif attrs.get("href"):
-                href_val = attrs["href"][:40]
-                loc, loc_type = f'By.cssSelector("a[href=\'{href_val}\']")', "CSS"
-            else:
-                loc, loc_type = f'By.xpath("//{tag}")', "XPATH"
+
+            loc, loc_type = _best_locator(tag, attrs, text)
+
             if loc in seen:
                 continue
             seen.add(loc)
+
+            # Infer purpose & priority
             combined = (text + " " + attrs.get("placeholder", "") + " " + attrs.get("aria-label", "")).lower()
-            if "password" in combined or attrs.get("type") == "password":
+            el_type  = attrs.get("type", "")
+
+            if "password" in combined or el_type == "password":
                 purpose, priority = "Password field", "HIGH"
-            elif "email" in combined or attrs.get("type") == "email":
+            elif "email" in combined or el_type == "email":
                 purpose, priority = "Email input", "HIGH"
-            elif "login" in combined or "sign in" in combined:
+            elif "login" in combined or "sign in" in combined or "signin" in combined:
                 purpose, priority = "Login action", "HIGH"
-            elif "search" in combined:
+            elif "search" in combined or el_type == "search":
                 purpose, priority = "Search field", "HIGH"
-            elif "submit" in combined or attrs.get("type") == "submit":
+            elif "submit" in combined or el_type == "submit":
                 purpose, priority = "Form submit", "HIGH"
             elif tag == "select":
                 purpose, priority = "Dropdown selector", "MED"
-            elif tag == "a":
-                purpose, priority = f"Link: {text[:30] or attrs.get('href', '')[:25]}", "MED"
+            elif tag == "textarea":
+                purpose, priority = "Text area input", "MED"
             elif tag == "button":
-                purpose, priority = f"Button: {text[:30]}", "MED"
+                purpose, priority = f"Button: {text[:35] or 'unnamed'}", "MED"
+            elif tag == "a":
+                label = text[:30] or attrs.get("href", "")[:25]
+                purpose, priority = f"Link: {label}", "MED"
+            elif tag == "label":
+                purpose, priority = f"Label: {text[:35]}", "LOW"
             else:
                 purpose, priority = f"<{tag}> element", "LOW"
+
             rows.append({
-                "tag": tag, "purpose": purpose,
-                "locator": loc, "loc_type": loc_type, "priority": priority,
+                "tag":      tag,
+                "purpose":  purpose,
+                "locator":  loc,
+                "loc_type": loc_type,
+                "priority": priority,
             })
 
     return rows
@@ -700,13 +777,30 @@ def agent_element_finder(client, model_name, memory: dict, max_el: int) -> str:
 
     system = """You are a Senior QA Automation Engineer. Analyse this page and output elements in EXACTLY this format per line:
 [N] Tag: <tag> | Purpose: <what it does> | Locator: By.<TYPE>("<value>") | Priority: HIGH/MED/LOW
-Prefer: ID > name > CSS selector > XPath. No preamble."""
 
-    user = f"""Analyse and list up to {max_el} interactive elements with best Selenium locators.
+LOCATOR SELECTION RULES — apply in this order for each element:
+1. By.id("...")                              — element has a unique id attribute
+2. By.name("...")                            — <input>/<select> with name attr (no id)
+3. By.xpath("//tag[normalize-space()='Text']") — <button> or <a> with clear visible text
+4. By.xpath("//*[@aria-label='...']")       — aria-label present, no id/name
+5. By.cssSelector("input[type='email']")   — typed inputs without id/name
+6. By.cssSelector("[placeholder='...']")   — inputs identified by placeholder
+7. By.linkText("...")                        — <a> with short, clean visible text (≤30 chars)
+8. By.cssSelector("tag.classname")           — unique single class exists
+9. By.xpath("//tag[@attr='value']")         — fallback with attribute predicate
+
+MANDATORY DIVERSITY RULE:
+You MUST use a MIX of locator types. Do NOT output only CSS selectors.
+Target distribution across all elements: ~30% ID/NAME, ~30% XPath, ~20% CSS, ~20% LinkText/ClassName.
+No preamble. No explanation. Output lines only."""
+
+    user = f"""Analyse and list up to {max_el} interactive elements with MIXED Selenium locator strategies.
 
 PAGE SNAPSHOT:
 {ctx}
 
+REMINDER: Use a variety — By.id for fields with ids, By.xpath for buttons/text elements,
+By.linkText for nav links, By.cssSelector for typed inputs, By.name for form fields.
 Output each element on its own line using the exact format above."""
 
     result = call_llm(client, model_name, system, user)
