@@ -1,13 +1,13 @@
 """
-Multi-Agent QA Code Generator v3
+Multi-Agent QA Code Generator v3.1
 ----------------------------------
-Changes from v2:
-  ✅ Sidebar removed → collapsible top config panel (mobile-friendly)
-  ✅ Output simplified to 2 tabs:
-       Tab 1 — Locators table (element, purpose, locator, priority)
-       Tab 2 — Java Selenium TestNG test cases
+Changes from v3:
+  ✅ Groq API key auto-loaded from Streamlit secrets (GROQ_API_KEY)
+     → Falls back to manual text input if secret not found
+  ✅ Configuration moved to collapsible sidebar
+     → Sidebar toggled via ☰ / ✕ button (mobile + desktop)
+  ✅ Clear Results button resets all output state
   ✅ All agent internals (ReAct loop, memory, feedback loop) preserved
-  ✅ Mobile-responsive layout
 
 No CrewAI · No LangChain · No paid APIs · Groq free tier only
 """
@@ -24,7 +24,7 @@ from groq import Groq
 st.set_page_config(
     page_title="QA Agent v3",
     page_icon="🤖",
-    layout="centered",   # centered works better on mobile than "wide"
+    layout="wide",
 )
 
 st.markdown("""
@@ -46,7 +46,6 @@ st.markdown("""
   --muted:        #5a6380;
 }
 
-/* ── Global reset ── */
 html, body, [class*="css"] {
   font-family: 'Bricolage Grotesque', sans-serif;
   background: var(--bg) !important;
@@ -54,15 +53,74 @@ html, body, [class*="css"] {
 }
 #MainMenu, footer, header { visibility: hidden; }
 
-/* ── Mobile-first container ── */
+/* ── Sidebar styling ── */
+[data-testid="stSidebar"] {
+  background: var(--surface) !important;
+  border-right: 1px solid var(--border-bright) !important;
+}
+[data-testid="stSidebar"] * {
+  color: var(--text) !important;
+}
+[data-testid="stSidebar"] .stSelectbox > div > div > div,
+[data-testid="stSidebar"] .stTextInput > div > div > input,
+[data-testid="stSidebar"] .stNumberInput > div > div > input {
+  background: var(--card) !important;
+  border: 1px solid var(--border-bright) !important;
+  border-radius: 8px !important;
+  color: var(--text) !important;
+  font-family: 'IBM Plex Mono', monospace !important;
+}
+[data-testid="stSidebar"] .stSlider label,
+[data-testid="stSidebar"] .stCheckbox label,
+[data-testid="stSidebar"] .stSelectbox label,
+[data-testid="stSidebar"] .stTextInput label {
+  color: var(--muted) !important;
+  font-size: .82rem !important;
+}
+[data-testid="stSidebar"] .sidebar-section {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: .9rem 1rem;
+  margin-bottom: .9rem;
+}
+[data-testid="stSidebar"] .sidebar-section-title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .68rem;
+  color: var(--blue);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  margin-bottom: .7rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: .4rem;
+}
+[data-testid="stSidebar"] .api-status {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .72rem;
+  padding: 5px 10px;
+  border-radius: 6px;
+  margin-top: .4rem;
+}
+[data-testid="stSidebar"] .api-ok {
+  background: rgba(0,255,157,.08);
+  color: var(--green);
+  border: 1px solid rgba(0,255,157,.3);
+}
+[data-testid="stSidebar"] .api-manual {
+  background: rgba(255,140,66,.08);
+  color: var(--orange);
+  border: 1px solid rgba(255,140,66,.3);
+}
+
+/* ── Main area ── */
 .block-container {
-  padding: 1rem !important;
-  max-width: 900px !important;
+  padding: 1rem 1.5rem !important;
+  max-width: 1100px !important;
 }
 
 /* ── Hero ── */
 .hero {
-  padding: 1.8rem .5rem 1.4rem;
+  padding: 1.6rem .5rem 1.2rem;
   text-align: center;
   border-bottom: 1px solid var(--border);
   margin-bottom: 1.4rem;
@@ -85,23 +143,6 @@ html, body, [class*="css"] {
   line-height: 1.15;
 }
 .hero p { color: var(--muted); font-size: .88rem; margin: 0; }
-
-/* ── Config panel (replaces sidebar) ── */
-.config-panel {
-  background: var(--card);
-  border: 1px solid var(--border-bright);
-  border-radius: 12px;
-  padding: 1rem 1.1rem;
-  margin-bottom: 1.2rem;
-}
-.config-panel h4 {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: .75rem;
-  color: var(--blue);
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  margin: 0 0 .8rem;
-}
 
 /* ── ReAct trace card ── */
 .react-card {
@@ -177,7 +218,6 @@ html, body, [class*="css"] {
 }
 .loc-table tr:hover td { background: rgba(77,121,255,.04); }
 
-/* priority badges */
 .badge {
   display: inline-block;
   border-radius: 5px;
@@ -196,7 +236,6 @@ html, body, [class*="css"] {
 
 .locator-val  { color: var(--green); font-size: .78rem; }
 
-/* ── Score badge ── */
 .score-badge {
   display: inline-block;
   padding: 3px 12px;
@@ -209,7 +248,6 @@ html, body, [class*="css"] {
 .score-mid  { background: rgba(255,209,102,.1); color: var(--yellow); border: 1px solid var(--yellow); }
 .score-low  { background: rgba(255,77,109,.1);  color: var(--red);    border: 1px solid var(--red); }
 
-/* ── Iter badge ── */
 .iter-badge {
   font-family: 'IBM Plex Mono', monospace;
   font-size: .7rem;
@@ -246,6 +284,13 @@ html, body, [class*="css"] {
   border: 1px solid var(--green) !important;
   border-radius: 8px !important;
 }
+/* Clear button override — make it look distinct (red-ish) */
+button[kind="secondary"] {
+  background: rgba(255,77,109,.08) !important;
+  color: var(--red) !important;
+  border: 1px solid var(--red) !important;
+  font-weight: 600 !important;
+}
 .stTabs [data-baseweb="tab"] {
   font-family: 'IBM Plex Mono', monospace !important;
   font-size: .78rem !important;
@@ -255,13 +300,10 @@ div[data-testid="stExpander"] {
   border: 1px solid var(--border) !important;
   border-radius: 8px !important;
 }
-/* Make sliders and checkboxes readable on dark bg */
 .stSlider label, .stCheckbox label, .stSelectbox label {
   color: var(--muted) !important;
   font-size: .82rem !important;
 }
-
-/* ── Responsive table wrapper ── */
 .table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -271,7 +313,109 @@ div[data-testid="stExpander"] {
 </style>
 """, unsafe_allow_html=True)
 
-# ── Hero ───────────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SESSION STATE  (for clear results)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def reset_results():
+    for key in ["result_memory", "result_final_code", "result_final_score",
+                "result_page_data", "result_url", "pipeline_done"]:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
+with st.sidebar:
+    st.markdown("""
+<div style="font-family:'IBM Plex Mono',monospace;font-size:.68rem;color:#4d79ff;
+letter-spacing:.16em;text-transform:uppercase;padding:.5rem 0 .9rem">
+⚙ Configuration
+</div>
+""", unsafe_allow_html=True)
+
+    # ── API Key section ──
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-title">🔑 Groq API Key</div>', unsafe_allow_html=True)
+
+    # Try to load from Streamlit secrets first
+    groq_api_key = None
+    key_from_secrets = False
+
+    try:
+        secret_key = st.secrets.get("GROQ_API_KEY", None)
+        if secret_key and secret_key.startswith("gsk_"):
+            groq_api_key = secret_key
+            key_from_secrets = True
+    except Exception:
+        pass
+
+    if key_from_secrets:
+        st.markdown(
+            '<div class="api-status api-ok">✅ Loaded from Streamlit Secrets</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="api-status api-manual">⚠ Secret not found — enter manually</div>',
+            unsafe_allow_html=True,
+        )
+        manual_key = st.text_input(
+            "Groq API Key",
+            type="password",
+            placeholder="gsk_...",
+            key="manual_api_key",
+        )
+        if manual_key:
+            groq_api_key = manual_key
+        st.caption("[Get a free key →](https://console.groq.com)")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Model section ──
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-title">🧠 Model</div>', unsafe_allow_html=True)
+    model = st.selectbox(
+        "LLM Model",
+        ["llama-3.3-70b-versatile", "llama3-8b-8192", "gemma2-9b-it"],
+        index=0,
+        label_visibility="collapsed",
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Generation options ──
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-title">🛠 Generation Options</div>', unsafe_allow_html=True)
+    include_waits  = st.checkbox("WebDriverWait", value=True)
+    include_testng = st.checkbox("Use TestNG",    value=True)
+    max_elements   = st.slider("Max elements",    10, 40, 20)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Pipeline tuning ──
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-title">⚡ Pipeline Tuning</div>', unsafe_allow_html=True)
+    delay_secs      = st.slider("Agent delay (s)",       2, 10, 4)
+    max_iterations  = st.slider("Max loop iterations",   1,  5, 3)
+    score_threshold = st.slider("Quality threshold",     5,  9, 7)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Clear Results button ──
+    if st.button("🗑️ Clear Results", use_container_width=True, type="secondary"):
+        reset_results()
+        st.rerun()
+
+    st.caption("QA Agent v3.1 · Groq Free Tier · Streamlit")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HERO
+# ══════════════════════════════════════════════════════════════════════════════
+
 st.markdown("""
 <div class="hero">
   <div class="hero-label">Scrape · Locate · Generate · Review</div>
@@ -279,39 +423,6 @@ st.markdown("""
   <p>Element Locators + Java Selenium TestNG · Groq Free Tier</p>
 </div>
 """, unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CONFIG PANEL  (replaces sidebar — works on mobile)
-# ══════════════════════════════════════════════════════════════════════════════
-
-with st.expander("⚙️ Configuration", expanded=False):
-    st.markdown(
-        "Get a **free** Groq API key at "
-        "[console.groq.com](https://console.groq.com)"
-    )
-    groq_api_key = st.text_input(
-        "Groq API Key", type="password",
-        placeholder="gsk_...",
-        key="api_key",
-    )
-    model = st.selectbox(
-        "Model",
-        ["llama-3.3-70b-versatile", "llama3-8b-8192", "gemma2-9b-it"],
-        index=0,
-    )
-    col_a, col_b = st.columns(2)
-    with col_a:
-        include_waits  = st.checkbox("WebDriverWait", value=True)
-        include_testng = st.checkbox("Use TestNG",    value=True)
-    with col_b:
-        max_elements   = st.slider("Max elements", 10, 40, 20)
-        delay_secs     = st.slider("Agent delay (s)", 2, 10, 4)
-    col_c, col_d = st.columns(2)
-    with col_c:
-        max_iterations = st.slider("Max loop iterations", 1, 5, 3)
-    with col_d:
-        score_threshold = st.slider("Quality threshold", 5, 9, 7)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -399,47 +510,39 @@ def tool_score_code(code: str, issues: list) -> dict:
 
 def init_memory(url: str) -> dict:
     return {
-        "url":              url,
-        "page_data":        None,
-        "element_analysis": None,   # plain-text list from Agent 1
-        "locator_rows":     [],     # structured rows for the table
-        "raw_code":         None,
-        "final_code":       None,
-        "iterations":       0,
-        "scores":           [],
-        "issues_history":   [],
-        "agent_logs":       [],
+        "url":               url,
+        "page_data":         None,
+        "element_analysis":  None,
+        "locator_rows":      [],
+        "raw_code":          None,
+        "final_code":        None,
+        "iterations":        0,
+        "scores":            [],
+        "issues_history":    [],
+        "agent_logs":        [],
         "orchestrator_plan": None,
     }
 
 
 def log_trace(memory: dict, agent: str, thought: str, action: str, observation: str):
     memory["agent_logs"].append({
-        "agent":      agent,
-        "thought":    thought,
-        "action":     action,
-        "observation":observation,
-        "iteration":  memory["iterations"],
-        "ts":         time.time(),
+        "agent":       agent,
+        "thought":     thought,
+        "action":      action,
+        "observation": observation,
+        "iteration":   memory["iterations"],
+        "ts":          time.time(),
     })
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOCATOR TABLE BUILDER  (parses Agent 1 text output into structured rows)
+# LOCATOR TABLE BUILDER
 # ══════════════════════════════════════════════════════════════════════════════
 
 def parse_locator_rows(agent1_text: str, page_elements: list) -> list:
-    """
-    Produces structured rows for the Locators tab table.
-    Combines heuristic parsing from the raw page elements with
-    the LLM-enriched agent 1 output.
-    """
     rows = []
     seen = set()
 
-    # ── 1. Parse the LLM output lines first (highest quality) ─────────────
-    # Expected format (from agent prompt):
-    #   [N] Tag: <tag> | Purpose: <desc> | Locator: By.xxx("val") | Priority: HIGH/MED/LOW
     line_re = re.compile(
         r'\[?\d+\]?\s*Tag:\s*(?P<tag>\S+)\s*\|'
         r'\s*Purpose:\s*(?P<purpose>[^|]+)\|'
@@ -452,15 +555,12 @@ def parse_locator_rows(agent1_text: str, page_elements: list) -> list:
         if loc in seen:
             continue
         seen.add(loc)
-
-        # Derive locator type from the By.xxx prefix
         loc_type = "XPATH"
-        if "By.id(" in loc:         loc_type = "ID"
-        elif "By.name(" in loc:     loc_type = "NAME"
-        elif "By.cssSelector(" in loc: loc_type = "CSS"
-        elif "By.className(" in loc:   loc_type = "CLASS"
-        elif "By.linkText(" in loc:    loc_type = "LINK"
-
+        if "By.id(" in loc:              loc_type = "ID"
+        elif "By.name(" in loc:          loc_type = "NAME"
+        elif "By.cssSelector(" in loc:   loc_type = "CSS"
+        elif "By.className(" in loc:     loc_type = "CLASS"
+        elif "By.linkText(" in loc:      loc_type = "LINK"
         rows.append({
             "tag":      m.group("tag").strip().replace("<", "").replace(">", ""),
             "purpose":  m.group("purpose").strip(),
@@ -469,37 +569,26 @@ def parse_locator_rows(agent1_text: str, page_elements: list) -> list:
             "priority": m.group("priority").strip().upper(),
         })
 
-    # ── 2. Fall back to raw scraped elements if LLM parse gave few rows ────
     if len(rows) < 3 and page_elements:
         for el in page_elements:
             attrs = el.get("attrs", {})
             tag   = el.get("tag", "?")
             text  = el.get("text", "")
-
-            # Best locator
             if attrs.get("id"):
-                loc      = f'By.id("{attrs["id"]}")'
-                loc_type = "ID"
+                loc, loc_type = f'By.id("{attrs["id"]}")', "ID"
             elif attrs.get("name"):
-                loc      = f'By.name("{attrs["name"]}")'
-                loc_type = "NAME"
+                loc, loc_type = f'By.name("{attrs["name"]}")', "NAME"
             elif attrs.get("class"):
                 cls = attrs["class"].split()[0]
-                loc      = f'By.cssSelector("{tag}.{cls}")'
-                loc_type = "CSS"
+                loc, loc_type = f'By.cssSelector("{tag}.{cls}")', "CSS"
             elif attrs.get("href"):
                 href_val = attrs["href"][:40]
-                loc      = f'By.cssSelector("a[href=\'{href_val}\']")'
-                loc_type = "CSS"
+                loc, loc_type = f'By.cssSelector("a[href=\'{href_val}\']")', "CSS"
             else:
-                loc      = f'By.xpath("//{tag}")'
-                loc_type = "XPATH"
-
+                loc, loc_type = f'By.xpath("//{tag}")', "XPATH"
             if loc in seen:
                 continue
             seen.add(loc)
-
-            # Infer purpose
             combined = (text + " " + attrs.get("placeholder", "") + " " + attrs.get("aria-label", "")).lower()
             if "password" in combined or attrs.get("type") == "password":
                 purpose, priority = "Password field", "HIGH"
@@ -519,13 +608,9 @@ def parse_locator_rows(agent1_text: str, page_elements: list) -> list:
                 purpose, priority = f"Button: {text[:30]}", "MED"
             else:
                 purpose, priority = f"<{tag}> element", "LOW"
-
             rows.append({
-                "tag":      tag,
-                "purpose":  purpose,
-                "locator":  loc,
-                "loc_type": loc_type,
-                "priority": priority,
+                "tag": tag, "purpose": purpose,
+                "locator": loc, "loc_type": loc_type, "priority": priority,
             })
 
     return rows
@@ -597,7 +682,7 @@ def orchestrator_should_loop(client, model_name, memory: dict, score: float, thr
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AGENT 1 — Element Finder
+# AGENTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def agent_element_finder(client, model_name, memory: dict, max_el: int) -> str:
@@ -626,13 +711,9 @@ Output each element on its own line using the exact format above."""
 
     result = call_llm(client, model_name, system, user)
     log_trace(memory, "Element Finder", thought, "call_llm(element_analysis)",
-              f"Got {result.count('[')  } element entries.")
+              f"Got {result.count('[')} element entries.")
     return result
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# AGENT 2 — Test Architect
-# ══════════════════════════════════════════════════════════════════════════════
 
 def agent_test_architect(client, model_name, memory: dict,
                          wait_instr: bool, testng_instr: bool) -> str:
@@ -688,10 +769,6 @@ Include all imports. POM pattern. {waits_note}"""
     return result
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# AGENT 3 — QA Reviewer
-# ══════════════════════════════════════════════════════════════════════════════
-
 def agent_qa_reviewer(client, model_name, memory: dict) -> tuple:
     code    = memory["raw_code"]
     thought = "Validate with tools, score, then fix any issues."
@@ -719,10 +796,10 @@ CODE:
 
 Output final production-ready code:"""
 
-    fixed_code     = call_llm(client, model_name, system, user)
-    re_val         = tool_validate_java_syntax(fixed_code)
-    re_score       = tool_score_code(fixed_code, re_val["issues"])
-    final_score    = re_score["score"]
+    fixed_code  = call_llm(client, model_name, system, user)
+    re_val      = tool_validate_java_syntax(fixed_code)
+    re_score    = tool_score_code(fixed_code, re_val["issues"])
+    final_score = re_score["score"]
 
     log_trace(memory, "QA Reviewer",
               "Re-validating fixed code.",
@@ -786,29 +863,21 @@ def render_locator_table(rows: list):
         st.warning("No locators extracted. The page may block scraping — test cases were still generated from URL context.")
         return
 
-    # Stats row
     high = sum(1 for r in rows if r["priority"] == "HIGH")
     ids  = sum(1 for r in rows if r["loc_type"] == "ID")
-    css  = sum(1 for r in rows if r["loc_type"] in ("CSS", "CLASS", "LINK"))
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Elements",    len(rows))
-    c2.metric("HIGH priority", high)
-    c3.metric("ID locators",  ids)
-    c4.metric("CSS/XPath",    len(rows) - ids)
+    c1.metric("Elements",      len(rows))
+    c2.metric("HIGH Priority", high)
+    c3.metric("ID Locators",   ids)
+    c4.metric("CSS/XPath",     len(rows) - ids)
 
-    # Table
     header = """
 <div class="table-scroll">
 <table class="loc-table">
   <thead>
     <tr>
-      <th>#</th>
-      <th>Tag</th>
-      <th>Purpose</th>
-      <th>Type</th>
-      <th>Locator</th>
-      <th>Priority</th>
+      <th>#</th><th>Tag</th><th>Purpose</th><th>Type</th><th>Locator</th><th>Priority</th>
     </tr>
   </thead>
   <tbody>"""
@@ -826,7 +895,6 @@ def render_locator_table(rows: list):
     footer = "\n  </tbody>\n</table>\n</div>"
     st.markdown(header + "".join(body_rows) + footer, unsafe_allow_html=True)
 
-    # Download locators as CSV
     csv_lines = ["#,Tag,Purpose,Locator Type,Locator,Priority"]
     for i, r in enumerate(rows, 1):
         csv_lines.append(f'{i},{r["tag"]},"{r["purpose"]}",{r["loc_type"]},"{r["locator"]}",{r["priority"]}')
@@ -860,20 +928,22 @@ run_btn = st.button("🚀 Run QA Agent Pipeline", use_container_width=True, type
 if run_btn:
     # ── Validation ────────────────────────────────────────────────────────────
     if not groq_api_key or not groq_api_key.startswith("gsk_"):
-        st.error("❌ Open ⚙️ Configuration above and enter your Groq API key.")
+        st.error("❌ Groq API key missing. Add GROQ_API_KEY to Streamlit Secrets or enter it in the sidebar.")
         st.stop()
     if not url_input or not is_valid_url(url_input):
         st.error("❌ Enter a valid URL (https:// or http://)")
         st.stop()
 
+    # Clear any previous results before running new pipeline
+    reset_results()
+
     client = Groq(api_key=groq_api_key)
     memory = init_memory(url_input)
 
-    # ── Agent execution log (collapsible) ─────────────────────────────────────
     with st.expander("🤖 Agent Execution Log", expanded=False):
         trace_container = st.container()
 
-    # ── STEP 0: Scraper Tool ─────────────────────────────────────────────────
+    # STEP 0: Scraper
     with st.spinner("🌐 Scraping page…"):
         page_data = tool_scrape_page(url_input, max_elements)
         memory["page_data"] = page_data
@@ -887,7 +957,7 @@ if run_btn:
 
     time.sleep(delay_secs)
 
-    # ── Orchestrator Plan ─────────────────────────────────────────────────────
+    # Orchestrator Plan
     with st.spinner("🧠 Orchestrator planning…"):
         orch_notes = orchestrator_plan(client, model, memory)
         memory["orchestrator_plan"] = orch_notes
@@ -900,15 +970,12 @@ if run_btn:
 
     time.sleep(delay_secs)
 
-    # ── Agent 1: Element Finder ───────────────────────────────────────────────
+    # Agent 1
     with st.spinner("🔍 Agent 1: Finding elements & locators…"):
         try:
             a1_out = agent_element_finder(client, model, memory, max_elements)
             memory["element_analysis"] = a1_out
-            # Parse structured rows for the Locators tab
-            memory["locator_rows"] = parse_locator_rows(
-                a1_out, page_data.get("elements", [])
-            )
+            memory["locator_rows"]     = parse_locator_rows(a1_out, page_data.get("elements", []))
         except Exception as e:
             st.error(f"Agent 1 failed: {e}")
             st.stop()
@@ -917,14 +984,13 @@ if run_btn:
 
     time.sleep(delay_secs)
 
-    # ── Feedback Loop: Agent 2 → Agent 3 ─────────────────────────────────────
+    # Feedback Loop: Agent 2 → Agent 3
     final_code  = ""
     final_score = 0.0
 
     for iteration in range(max_iterations):
         memory["iterations"] = iteration
 
-        # Agent 2
         with st.spinner(f"☕ Agent 2: Writing Java code (iter {iteration+1})…"):
             try:
                 a2_out = agent_test_architect(client, model, memory, include_waits, include_testng)
@@ -937,7 +1003,6 @@ if run_btn:
 
         time.sleep(delay_secs)
 
-        # Agent 3
         with st.spinner(f"🔎 Agent 3: Reviewing & scoring (iter {iteration+1})…"):
             try:
                 fixed_code, score, issues = agent_qa_reviewer(client, model, memory)
@@ -949,15 +1014,14 @@ if run_btn:
                 st.stop()
         with trace_container:
             render_trace(memory["agent_logs"][-1])
-            score_html   = score_badge_html(score)
-            issues_html  = "<br>".join(f"• {i}" for i in issues) if issues else "✅ No issues"
+            score_html  = score_badge_html(score)
+            issues_html = "<br>".join(f"• {i}" for i in issues) if issues else "✅ No issues"
             st.markdown(f"""
 <div class="react-card {'done' if score >= score_threshold else 'loop'}">
   <div class="agent-name orange">🔎 QA Reviewer — {score_html}</div>
   <div class="trace-val" style="margin-top:.35rem">{issues_html}</div>
 </div>""", unsafe_allow_html=True)
 
-        # Orchestrator decision
         if score >= score_threshold:
             log_trace(memory, "Orchestrator",
                       f"Score {score} ≥ {score_threshold}. Accepted.",
@@ -995,9 +1059,25 @@ if run_btn:
                     render_trace(memory["agent_logs"][-1])
                 break
 
-    # ════════════════════════════════════════════════════════════════════════
-    # FINAL OUTPUT — 2 TABS ONLY
-    # ════════════════════════════════════════════════════════════════════════
+    # Save results to session state (so clear button can wipe them)
+    st.session_state["result_memory"]     = memory
+    st.session_state["result_final_code"] = final_code
+    st.session_state["result_final_score"]= final_score
+    st.session_state["result_page_data"]  = page_data
+    st.session_state["result_url"]        = url_input
+    st.session_state["pipeline_done"]     = True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RESULTS  (shown from session state — survives reruns, cleared by button)
+# ══════════════════════════════════════════════════════════════════════════════
+
+if st.session_state.get("pipeline_done"):
+    memory      = st.session_state["result_memory"]
+    final_code  = st.session_state["result_final_code"]
+    final_score = st.session_state["result_final_score"]
+    page_data   = st.session_state["result_page_data"]
+
     st.success(
         f"✅ Pipeline complete — Score: **{final_score}/10** — "
         f"{memory['iterations']+1} iteration(s) — "
@@ -1006,21 +1086,17 @@ if run_btn:
 
     tab_loc, tab_code = st.tabs(["🔍 Locators", "☕ Java Test Cases"])
 
-    # ── Tab 1: Locators ───────────────────────────────────────────────────────
     with tab_loc:
         st.markdown("### Element Locators")
         st.caption(
-            f"Page: **{page_data.get('title', url_input)}** · "
+            f"Page: **{page_data.get('title', memory['url'])}** · "
             f"{len(memory['locator_rows'])} elements · "
             f"Locator strategy: ID > name > CSS > XPath"
         )
         render_locator_table(memory["locator_rows"])
-
-        # Also show raw Agent 1 output for reference
         with st.expander("📄 Raw Agent 1 Output", expanded=False):
             st.text_area("", value=memory["element_analysis"], height=250, label_visibility="collapsed")
 
-    # ── Tab 2: Java Test Cases ────────────────────────────────────────────────
     with tab_code:
         st.markdown("### Java Selenium TestNG Test Cases")
         col_score, col_dl = st.columns([1, 1])
@@ -1036,9 +1112,8 @@ if run_btn:
             )
         st.code(final_code, language="java")
 
-
 # ── Empty state ───────────────────────────────────────────────────────────────
-else:
+elif not run_btn:
     st.markdown("""
 <div style="display:flex;flex-direction:column;gap:.7rem;margin-top:1.5rem">
   <div class="react-card">
@@ -1062,6 +1137,4 @@ else:
   </div>
 </div>
 """, unsafe_allow_html=True)
-    st.info("👆 Open **⚙️ Configuration**, add your Groq API key, then enter a URL and hit Run.")
-
-st.caption("QA Agent v3 · Groq Free Tier · BeautifulSoup · Streamlit · Zero paid dependencies")
+    st.info("👈 Configure settings in the sidebar, enter a URL above, and hit Run.")
